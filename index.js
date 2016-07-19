@@ -5,11 +5,10 @@ var os = require('os');
 var path = require('path');
 var MemoryFS = require('memory-fs');
 var fs = new MemoryFS();
-
 var TMP_PATH = os.tmpdir();
+var isDevMode = process.env.NODE_ENV === 'development';
 
 var renderer = function(data, options, callback) {
-
   var userConfig = extend(
     hexo.theme.config.webpack || {},
     hexo.config.webpack || {}
@@ -22,34 +21,51 @@ var renderer = function(data, options, callback) {
   //
   var entry = (function(entry) {
     if (_.isString(entry)) entry = [entry];
-    if (_.isArray(entry)) {
-      entry = entry.map(function(x){ return path.join(cwd, x); });
-      return _.zipObject(entry.map(function(x){
-        return path.basename(x, path.extname(x));
-      }), entry);
-    }
-    return _.mapValues(entry, function(x){ return path.join(cwd, x); });
+
+    return entry
+      .filter(function(n){
+        return _.includes(n, 'source')
+      })
+      .map(function(n){
+        return path.join(cwd, n)
+      });
   })(userConfig.entry);
 
   //
   // If this file is not a webpack entry simply return the file.
   //
-  if (!_.includes(entry, data.path)) {
+  if (entry.length === 0) {
     return callback(null, data.text);
   }
-
   //
   // Copy config then extend it with some defaults.
   //
   var config = extend({}, userConfig);
 
+  if (isDevMode)
+    config.devtool = 'cheap-module-eval-source-map';
+
   config = extend(config, {
-    entry: entry,
+    entry: data.path,
     output: {
       entry: data.path,
       path: TMP_PATH,
       filename: path.basename(data.path)
-    }
+    },
+    plugins: [
+      new webpack.NoErrorsPlugin(),
+      new webpack.optimize.DedupePlugin(),
+      new webpack.optimize.UglifyJsPlugin({
+        sourceMap: isDevMode,
+        minimize: true,
+        compress: { warnings: false }
+      }),
+      new webpack.optimize.AggressiveMergingPlugin(),
+      new webpack.DefinePlugin({
+        'process.env.NODE_ENV': JSON.stringify(
+          isDevMode ? 'development' : 'production')
+      })
+    ]
   });
 
   //
@@ -68,6 +84,13 @@ var renderer = function(data, options, callback) {
     }
 
     contents = fs.readFileSync(outputPath).toString();
+
+    // Fix problems with HTML beautification
+    // see: https://github.com/hexojs/hexo/issues/1663
+    contents = contents
+      .replace(/</g, ' < ')
+      .replace(/< </g, ' << ');
+
     return callback(null, contents);
   });
 
